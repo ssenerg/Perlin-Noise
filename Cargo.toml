@@ -2,6 +2,7 @@
 name = "perlin-noise"
 version = "0.1.0"
 edition = "2024"
+readme = "README.md"
 
 [dependencies]
 bytemuck = { version = "1.25.2", optional = true }
