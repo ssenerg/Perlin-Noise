@@ -1,0 +1,25 @@
+[package]
+name = "perlin-noise"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.25.2", optional = true }
+png = { version = "0.18.1", optional = true }
+pollster = { version = "1.0.1", optional = true }
+wgpu = { version = "30.0.1", optional = true }
+
+[features]
+default = []
+# Evaluate full tables with a compute shader through wgpu.
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+# Write rendered images with Image::write_png.
+png = ["dep:png"]
+
+[[example]]
+name = "render"
+required-features = ["png"]
+
+[[example]]
+name = "image"
+required-features = ["png"]
