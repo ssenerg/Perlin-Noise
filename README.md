@@ -18,14 +18,16 @@ just image relief --seed 7 --cells 12         # any mode plus flags -> images/re
 just wallpaper 1                              # 4K, 3841x2161
 just wallpaper 1 --palette azure              # same picture in blue
 just wallpaper-square 1                       # 4K square, 3841x3841
+just globe 1                                  # a lit sphere, 1440x1440
+just globe 3 --palette crimson                # the same sphere in red
 just gallery                                  # one image per mode, side by side
 just options                                  # every flag with its default
 just show images/relief.png                   # open it (macOS)
 ```
 
 Images land in `images/`, which is not tracked. Modes are `gray`, `color`,
-`channels` and `relief`; `just options` lists the flags, which cover the
-lattice (`--cells`, `--detail`, `--seed`), the colour (`--palette`) and the
+`channels`, `relief` and `globe`; `just options` lists the flags, which cover
+the lattice (`--cells`, `--detail`, `--seed`), the colour (`--palette`) and the
 lighting (`--shape`, `--height`, `--gamma`, `--occlusion`, `--light`,
 `--ambient`, `--diffuse`, `--specular`, `--gloss`).
 
@@ -65,7 +67,7 @@ Worth knowing:
 
 ## Images from a field
 
-A `Renderer` wraps a two or three dimensional field. Axes map to the image the
+A `Renderer` wraps a field of two to four dimensions. Axes map to the image the
 way a row-major array does: the first axis runs down the image, the second
 across it, and for a three dimensional field the third is the colour axis.
 
@@ -121,6 +123,65 @@ all, so the dark comes only from the shading. The others (`Gray`, `Heat`,
 `Terrain`, `BlueRed`) bottom out in black, which draws a hard edge wherever the
 surface dips. New ramps are eight or so evenly spaced stops in
 `Palette::stops`.
+
+## A sphere out of four dimensions
+
+<p align="center">
+  <img src="docs/globe.png" width="480" alt="A lit sphere whose bumps and colours come from a 4D noise field">
+</p>
+
+`globe` spends three of the four axes on the sphere itself and reads the fourth
+for what the surface looks like.
+
+```rust
+use perlin_noise::{Globe, Instance, Renderer};
+
+// Seven cells across the sphere, two along the axis its surface is read off.
+let round = Renderer::new(Instance::new(vec![7, 7, 7, 2], 42)?)?;
+round.globe(1440, 1440, &Globe::default())?.write_png("globe.png")?;
+```
+
+The unit sphere is inscribed in the lattice box, so a point's direction from
+the centre *is* its position in the field. Nothing is wrapped around anything,
+which is why there is no seam and no stretching at the poles.
+
+The fourth axis is then sampled at four evenly spaced depths. The first is the
+point's distance from the centre, and the other three are its red, green and
+blue. How deep that axis is decides how much the four share: one cell keeps
+them a fraction of a cell apart, so colour and height stay related and the
+sphere comes out pearly, while two or three spread them past a cell each and
+the colours turn vivid and unrelated. Setting `rgb_from_fourth_axis` to false
+colours the sphere by height through `surface.palette` instead, which is what
+`--palette` does on the command line.
+
+`surface` is a `Relief`, so the lighting and shaping are the same knobs as
+above, with `height` read as how far the surface rises as a fraction of the
+radius. Past about 1.0 it stops buying much, because taller bumps also swell
+the sphere they sit on, so the shape grows with itself and the slopes settle.
+`fill` is how much of the shorter side of the image the sphere takes, and
+`background` is the colour behind it, which the rim fades into over the last
+half pixel.
+
+Its defaults are lit rather differently from the flat relief, because a sphere
+tall enough to read at a glance has much steeper walls than a height map does:
+
+- `gamma` is higher, which opens the creases between blobs into basins the
+  surface can fall through gradually. Left narrow they close to a hard line.
+- `occlusion` is deeper, so the hollows arrive somewhere near black instead of
+  stopping at a grey.
+- `gloss` is far tighter. A wide highlight on a steep wall lights the whole
+  wall at once, and a white smear over a dark hollow is what gives it a grey
+  cast. The highlight is also dimmed by the occlusion twice over: a hollow
+  deep enough to sit in its own shadow has no clear line to the light to
+  reflect either.
+- `samples` shades each pixel more than once and averages the result in linear
+  light. One sample leaves the highlights speckled wherever the surface is
+  steeper than a pixel, which is most of it.
+
+Height tilts the surface and shades it but does not move the outline, which
+stays a circle. Unlike the other modes this one follows a surface rather than a
+lattice, so it takes a size in pixels, `divisors` play no part, and there is no
+GPU path; `dims` alone set the feature size, in cells across the diameter.
 
 ## Features
 

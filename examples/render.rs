@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use perlin_noise::{Instance, Palette, Relief, Renderer, Shape};
+use perlin_noise::{Globe, Instance, Palette, Relief, Renderer, Shape};
 
 fn main() -> std::io::Result<()> {
     let out: PathBuf = std::env::args().nth(1).unwrap_or_else(|| ".".into()).into();
@@ -84,6 +84,34 @@ fn main() -> std::io::Result<()> {
             "{name}: {}x{} lit as {shape:?}",
             image.width(),
             image.height()
+        );
+    }
+
+    // A sphere out of a four dimensional field: three axes hold it, the
+    // fourth carries its height and colour. Its size is in pixels, since it
+    // samples a surface rather than a lattice.
+    let round = Renderer::new(Instance::new(vec![7, 7, 7, 2], seed)?)?;
+    for (globe, name) in [
+        (Globe::default(), "noise-globe.png"),
+        (
+            Globe {
+                rgb_from_fourth_axis: false,
+                ..Default::default()
+            },
+            "noise-globe-crimson.png",
+        ),
+    ] {
+        let image = round.globe(513, 513, &globe)?;
+        image.write_png(out.join(name))?;
+        println!(
+            "{name}: {}x{} sphere, colour from {}",
+            image.width(),
+            image.height(),
+            if globe.rgb_from_fourth_axis {
+                "the fourth axis".to_string()
+            } else {
+                format!("{:?}", globe.surface.palette)
+            }
         );
     }
 

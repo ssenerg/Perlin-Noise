@@ -22,6 +22,12 @@ wallpaper-square seed="1" *flags:
         --mode relief --cells 8 --detail 480 --seed {{seed}} \
         --out {{out}}/wallpaper-4k-square-{{seed}}.png {{flags}}
 
+# A lit sphere out of a 4D field, e.g. `just globe 3 --palette crimson`.
+globe seed="1" *flags:
+    cargo run --quiet --release --example image --features png -- \
+        --mode globe --size 1440 --seed {{seed}} \
+        --out {{out}}/globe-{{seed}}.png {{flags}}
+
 # The glossy liquid look at screen size, one file per seed.
 liquid seed="1" *flags:
     cargo run --quiet --release --example image --features png -- \

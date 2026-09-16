@@ -1,18 +1,22 @@
 //! Turning a noise field into an image.
 //!
-//! A [`Renderer`] wraps a two or three dimensional [`Instance`] and samples it
-//! on a refined lattice, exactly like [`Instance::table`], so `divisors` means
-//! the same thing here: axis `i` ends up with `dims[i] * divisors[i] + 1`
-//! samples, and that count becomes a pixel count.
+//! A [`Renderer`] wraps an [`Instance`] and samples it on a refined lattice,
+//! exactly like [`Instance::table`], so `divisors` means the same thing here:
+//! axis `i` ends up with `dims[i] * divisors[i] + 1` samples, and that count
+//! becomes a pixel count.
 //!
 //! Axes map to the image the way a row-major array does, so the **first axis
 //! runs down the image** (one row per sample) and the **second runs across it**
 //! (one column per sample). For a three dimensional field the third axis is the
 //! colour axis.
+//!
+//! [`Renderer::globe`] is the exception: it reads a four dimensional field
+//! along the surface of a sphere instead of along a lattice, so it takes a
+//! size in pixels and ignores `divisors`.
 
 use std::io::{Error, ErrorKind, Result};
 
-use crate::{Instance, Table};
+use crate::{Instance, PARALLEL_THRESHOLD, Table};
 
 /// Samples a noise field into pixels.
 pub struct Renderer {
@@ -22,13 +26,14 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// Wraps a field of two dimensions (greyscale) or three (colour).
+    /// Wraps a field of two dimensions (greyscale or relief), three (colour) or
+    /// four ([`Renderer::globe`]).
     pub fn new(noise: Instance) -> Result<Self> {
         let n = noise.dims().len();
-        if n != 2 && n != 3 {
+        if !(2..=4).contains(&n) {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
-                format!("Images need 2 or 3 dimensions, got {n}"),
+                format!("Images need 2 to 4 dimensions, got {n}"),
             ));
         }
         Ok(Self {
@@ -66,7 +71,7 @@ impl Renderer {
         let table = self.sample(divisors)?;
         let (height, width) = (table.shape()[0], table.shape()[1]);
 
-        let span = Span::of(table.values());
+        let span = Span::of(table.values().iter().copied());
         let pixels = table
             .values()
             .iter()
@@ -128,7 +133,7 @@ impl Renderer {
         let span = Span::of(
             slices
                 .iter()
-                .flat_map(|slice| table.values()[*slice..].iter().step_by(depth)),
+                .flat_map(|slice| table.values()[*slice..].iter().step_by(depth).copied()),
         );
 
         let mut pixels = Vec::with_capacity(width * height * 3);
@@ -153,7 +158,7 @@ impl Renderer {
         let table = self.sample(divisors)?;
         let (height, width) = (table.shape()[0], table.shape()[1]);
 
-        let span = Span::of(table.values());
+        let span = Span::of(table.values().iter().copied());
         let mut pixels = Vec::with_capacity(width * height * 3);
         for value in table.values() {
             pixels.extend_from_slice(&palette.color(span.position(*value)));
@@ -183,7 +188,7 @@ impl Renderer {
             .iter()
             .map(|value| relief.shape.apply(*value))
             .collect();
-        let span = Span::of(shaped.iter());
+        let span = Span::of(shaped.iter().copied());
         let heights: Vec<f64> = shaped
             .iter()
             .map(|value| span.position(*value).powf(relief.gamma))
@@ -266,7 +271,7 @@ impl Renderer {
         }
 
         let values = || table.values()[slice..].iter().step_by(depth);
-        let span = Span::of(values());
+        let span = Span::of(values().copied());
 
         let mut pixels = Vec::with_capacity(width * height * 3);
         for value in values() {
@@ -279,6 +284,147 @@ impl Renderer {
             channels: 3,
             pixels,
         })
+    }
+
+    /// A sphere carved out of a four dimensional field and projected onto a
+    /// `width` by `height` image.
+    ///
+    /// Three of the axes hold the sphere itself: the unit sphere is inscribed
+    /// in the lattice box, so a point's direction from the centre *is* its
+    /// position in the field. That leaves the surface seamless, with none of
+    /// the stretching at the poles a flat texture wrapped around a ball has.
+    ///
+    /// The fourth axis is sampled at four evenly spaced depths. The first is
+    /// the point's distance from the centre, the other three are its red,
+    /// green and blue, so neighbouring depths keep colour and height gently
+    /// related instead of independent.
+    ///
+    /// Height tilts the surface and shades it, but does not move the outline,
+    /// which stays a circle. Unlike the other modes this one samples points
+    /// along a surface rather than a lattice, so it has no GPU path and
+    /// `divisors` play no part: `dims` alone set the feature size, in cells
+    /// across the sphere's diameter.
+    pub fn globe(&self, width: usize, height: usize, globe: &Globe) -> Result<Image> {
+        self.expect_dims(4)?;
+        if width == 0 || height == 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "An image needs a positive width and height",
+            ));
+        }
+        if !(globe.fill > 0.0 && globe.fill <= 1.0) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("Fill has to be above 0 and at most 1, got {}", globe.fill),
+            ));
+        }
+
+        if globe.samples == 0 || globe.samples > MAX_SAMPLES {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Samples has to be between 1 and {MAX_SAMPLES}, got {}",
+                    globe.samples
+                ),
+            ));
+        }
+
+        let centre = [width as f64 / 2.0, height as f64 / 2.0];
+        let radius = globe.fill * width.min(height) as f64 / 2.0;
+        let material = &globe.surface;
+
+        // Four evenly spaced depths of the fourth axis, ends included.
+        let axis = self.noise.dims()[3] as f64;
+        let depths = [0.0, axis / 3.0, axis * 2.0 / 3.0, axis];
+
+        // A look over the whole sphere first, because the spans that turn
+        // noise into height and colour are measured over all of it.
+        let mut surface = vec![Surface::default(); width * height];
+        in_parallel(&mut surface, |index, point| {
+            let at = [(index % width) as f64 + 0.5, (index / width) as f64 + 0.5];
+            let Some((direction, cover)) = look(at, 1.0, centre, radius) else {
+                return;
+            };
+            point.cover = cover as f32;
+            point.height = material.shape.apply(self.on_sphere(direction, depths[0])) as f32;
+            for (channel, depth) in point.color.iter_mut().zip(&depths[1..]) {
+                *channel = self.on_sphere(direction, *depth) as f32;
+            }
+        });
+
+        let seen = |point: &&Surface| point.cover > 0.0;
+        let lit = Lit {
+            renderer: self,
+            globe,
+            depths,
+            heights: Span::of(surface.iter().filter(seen).map(|point| point.height as f64)),
+            // One span across all three channels, so a colour cast in the
+            // field survives instead of being normalised away channel by
+            // channel.
+            colors: Span::of(
+                surface
+                    .iter()
+                    .filter(seen)
+                    .flat_map(|point| point.color)
+                    .map(f64::from),
+            ),
+            light: normalize(material.light),
+            radius,
+        };
+
+        // Shading is sampled several times per pixel and averaged. One sample
+        // is not enough: a tight highlight on a steep slope is finer than a
+        // pixel, and point sampling it leaves the creases speckled.
+        let grid = globe.samples;
+        let span = 1.0 / grid as f64;
+        let mut pixels = vec![[0u8; 3]; width * height];
+        in_parallel(&mut pixels, |index, pixel| {
+            let corner = [(index % width) as f64, (index / width) as f64];
+            let mut light = [0.0; 3];
+            let mut covered = 0.0;
+            for down in 0..grid {
+                for across in 0..grid {
+                    let at = [
+                        corner[0] + (across as f64 + 0.5) * span,
+                        corner[1] + (down as f64 + 0.5) * span,
+                    ];
+                    let Some((direction, cover)) = look(at, span, centre, radius) else {
+                        continue;
+                    };
+                    for (total, value) in light.iter_mut().zip(lit.point(direction)) {
+                        *total += value * cover;
+                    }
+                    covered += cover;
+                }
+            }
+
+            let count = (grid * grid) as f64;
+            for ((slot, total), behind) in pixel.iter_mut().zip(light).zip(globe.background) {
+                // Averaged in linear light, and what the sphere left uncovered
+                // is filled in with the background.
+                *slot = to_srgb(total / count + to_linear(behind) * (1.0 - covered / count));
+            }
+        });
+
+        Ok(Image {
+            width,
+            height,
+            channels: 3,
+            pixels: pixels.into_iter().flatten().collect(),
+        })
+    }
+
+    /// Noise at a point on the sphere's surface, at one depth of the fourth
+    /// axis.
+    fn on_sphere(&self, direction: [f64; 3], depth: f64) -> f64 {
+        let dims = self.noise.dims();
+        let mut point = [0.0; 4];
+        for (axis, coord) in point[..3].iter_mut().enumerate() {
+            // The unit sphere inscribed in the lattice box.
+            *coord = (direction[axis] + 1.0) * 0.5 * dims[axis] as f64;
+        }
+        point[3] = depth;
+        self.noise.sample(&point)
     }
 
     /// Samples along the third axis for `divisors`, without sampling the field.
@@ -319,12 +465,12 @@ struct Span {
 }
 
 impl Span {
-    fn of<'a>(values: impl IntoIterator<Item = &'a f64>) -> Self {
+    fn of(values: impl IntoIterator<Item = f64>) -> Self {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         for value in values {
-            min = min.min(*value);
-            max = max.max(*value);
+            min = min.min(value);
+            max = max.max(value);
         }
         Self { min, max }
     }
@@ -376,6 +522,243 @@ fn slope(rise: f64, pixels: usize, step: f64) -> f64 {
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Two unit vectors at right angles to `direction` and to each other.
+fn tangents(direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    // Any vector that is not lined up with the direction will do to start.
+    let aside = if direction[1].abs() < 0.9 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let across = normalize(cross(aside, direction));
+    (across, cross(direction, across))
+}
+
+/// Where a point `span` pixels wide, sitting at `at` in the image, meets a
+/// sphere of `radius` pixels centred on `centre`: the direction from the
+/// sphere's centre to that point, and how much of the point the sphere covers.
+/// `None` when it misses.
+fn look(at: [f64; 2], span: f64, centre: [f64; 2], radius: f64) -> Option<([f64; 3], f64)> {
+    let x = (at[0] - centre[0]) / radius;
+    let y = (at[1] - centre[1]) / radius;
+
+    // Coverage fades over the last half width either side of the rim, which is
+    // what keeps the outline from going jagged.
+    let reach = (x * x + y * y).sqrt();
+    let cover = ((1.0 - reach) * radius / span + 0.5).min(1.0);
+    if cover <= 0.0 {
+        return None;
+    }
+
+    // Straight-on projection, so the viewer looks down the z axis and the near
+    // face of the sphere is the half with z above 0.
+    let z = (1.0 - reach * reach).max(0.0).sqrt();
+    Some((normalize([x, y, z]), cover))
+}
+
+/// Runs `each` over every item together with its index, split across threads.
+fn in_parallel<T: Send>(items: &mut [T], each: impl Fn(usize, &mut T) + Send + Sync) {
+    if items.len() < PARALLEL_THRESHOLD {
+        for (index, item) in items.iter_mut().enumerate() {
+            each(index, item);
+        }
+        return;
+    }
+
+    let threads = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+    let chunk = items.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        for (index, part) in items.chunks_mut(chunk).enumerate() {
+            let each = &each;
+            let start = index * chunk;
+            scope.spawn(move || {
+                for (offset, item) in part.iter_mut().enumerate() {
+                    each(start + offset, item);
+                }
+            });
+        }
+    });
+}
+
+/// What one pixel of a globe sees, gathered before the spans are known.
+///
+/// Held in `f32` because a whole frame of these is kept at once and the values
+/// only ever become bytes.
+#[derive(Clone, Copy, Default)]
+struct Surface {
+    /// How much of the pixel the sphere covers; 0.0 means it missed.
+    cover: f32,
+    /// Shaped noise standing for the distance from the centre.
+    height: f32,
+    /// The three colour channels off the fourth axis.
+    color: [f32; 3],
+}
+
+/// How far towards the rim a sphere's surface is still measured a pixel at a
+/// time. Past this the surface is turned so far from the viewer that a pixel
+/// covers an unbounded stretch of it, and the slope would be read over half
+/// the sphere.
+const RIM: f64 = 0.2;
+
+/// Most shading samples a pixel of a globe is allowed along each axis.
+pub const MAX_SAMPLES: usize = 8;
+
+/// One globe's worth of shading, held together so a single surface point can
+/// be lit on its own.
+struct Lit<'a> {
+    renderer: &'a Renderer,
+    globe: &'a Globe,
+    /// Depths of the fourth axis: height, then red, green and blue.
+    depths: [f64; 4],
+    heights: Span,
+    colors: Span,
+    light: [f64; 3],
+    /// Radius of the sphere in pixels, which sets how wide a stretch of
+    /// surface one pixel covers.
+    radius: f64,
+}
+
+impl Lit<'_> {
+    /// The linear light coming off the point of the surface lying in
+    /// `direction` from the centre.
+    fn point(&self, direction: [f64; 3]) -> [f64; 3] {
+        let material = &self.globe.surface;
+        let height = self.rise(self.renderer.on_sphere(direction, self.depths[0]));
+
+        // Slope of the surface along two directions tangent to the sphere,
+        // measured a pixel either side. Reading it over the width of a pixel
+        // rather than at a point is what stops a crease in the height from
+        // turning over inside one pixel; near the rim a pixel covers a longer
+        // stretch, because the surface is turned almost edge on.
+        let footprint = 1.0 / (self.radius * direction[2].max(RIM));
+        let (across, down) = tangents(direction);
+        let slope = |tangent: [f64; 3]| {
+            let step = |sign: f64| {
+                let offset = normalize([
+                    direction[0] + sign * footprint * tangent[0],
+                    direction[1] + sign * footprint * tangent[1],
+                    direction[2] + sign * footprint * tangent[2],
+                ]);
+                self.rise(self.renderer.on_sphere(offset, self.depths[0]))
+            };
+            (step(1.0) - step(-1.0)) / (2.0 * footprint)
+        };
+        let (slope_across, slope_down) = (slope(across), slope(down));
+
+        // Normal of a surface sitting at that height: the outward direction,
+        // tipped away from the tangent the height climbs along.
+        let lifted = 1.0 + material.height * height;
+        let tilt = material.height / lifted;
+        let normal = normalize([
+            direction[0] - tilt * (slope_across * across[0] + slope_down * down[0]),
+            direction[1] - tilt * (slope_across * across[1] + slope_down * down[1]),
+            direction[2] - tilt * (slope_across * across[2] + slope_down * down[2]),
+        ]);
+
+        let lambert = dot(normal, self.light).max(0.0);
+        // Halfway between the light and a viewer looking straight on, which is
+        // where a glossy surface throws its highlight.
+        let half = normalize([self.light[0], self.light[1], self.light[2] + 1.0]);
+        let highlight = dot(normal, half).max(0.0).powf(material.gloss);
+        // Stand-in for ambient occlusion: the lower the ground, the less light
+        // reaches it.
+        let shadowed = 1.0 - material.occlusion * (1.0 - height);
+
+        let base = if self.globe.rgb_from_fourth_axis {
+            let mut channels = [0; 3];
+            for (channel, depth) in channels.iter_mut().zip(&self.depths[1..]) {
+                *channel = self.colors.byte(self.renderer.on_sphere(direction, *depth));
+            }
+            channels
+        } else {
+            material.palette.color(height)
+        };
+
+        let mut light = [0.0; 3];
+        for (out, value) in light.iter_mut().zip(base) {
+            // Lit in linear space, like `relief`, where twice the value really
+            // is twice the light. The highlight is gated by the diffuse term
+            // because a surface turned away from the light cannot catch a
+            // reflection of it, and by the occlusion twice over: a hollow deep
+            // enough to sit in its own shadow has no clear line to the light
+            // to reflect, and a bright seam down every crease is what gives a
+            // dark hollow a grey cast.
+            *out = (to_linear(value) * (material.ambient + material.diffuse * lambert)
+                + material.specular * highlight * lambert * shadowed * shadowed)
+                * shadowed;
+        }
+        light
+    }
+
+    /// The run from raw noise to a height between 0.0 and 1.0.
+    fn rise(&self, value: f64) -> f64 {
+        self.heights
+            .position(self.globe.surface.shape.apply(value))
+            .powf(self.globe.surface.gamma)
+    }
+}
+
+/// Lighting and colour for [`Renderer::globe`].
+#[derive(Clone, Copy, Debug)]
+pub struct Globe {
+    /// Height shaping, colour ramp and lighting, as in [`Renderer::relief`].
+    /// [`Relief::height`] is read here as how far the surface rises and falls,
+    /// as a fraction of the sphere's radius. Past about 1.0 it stops buying
+    /// much: taller bumps also swell the sphere they sit on, so the shape
+    /// grows with itself and the slopes settle.
+    pub surface: Relief,
+    /// Take red, green and blue from three depths of the fourth axis. When
+    /// this is off the colour comes from the height through
+    /// [`Relief::palette`] instead.
+    pub rgb_from_fourth_axis: bool,
+    /// How much of the shorter side of the image the sphere fills, above 0.0
+    /// and up to 1.0.
+    pub fill: f64,
+    /// Colour behind the sphere.
+    pub background: [u8; 3],
+    /// Shading samples per pixel along each axis, from 1 to [`MAX_SAMPLES`],
+    /// so 2 shades each pixel four times and averages the result. One sample
+    /// leaves the highlights speckled wherever the surface is steep, since
+    /// they are finer there than a pixel; every extra sample costs its share
+    /// of the render.
+    pub samples: usize,
+}
+
+impl Default for Globe {
+    fn default() -> Self {
+        Self {
+            surface: Relief {
+                // A sphere is read at a glance, so it carries much taller
+                // bumps than the flat relief. Those bumps leave steep walls,
+                // which want a wider height curve to fall smoothly, deeper
+                // occlusion to reach the dark, and a tighter highlight so a
+                // whole wall does not light up grey at once.
+                height: 0.9,
+                gamma: 1.6,
+                occlusion: 0.7,
+                ambient: 0.3,
+                diffuse: 1.2,
+                gloss: 300.0,
+                ..Default::default()
+            },
+            rgb_from_fourth_axis: true,
+            fill: 0.92,
+            background: [7, 8, 12],
+            samples: 2,
+        }
+    }
 }
 
 fn normalize(vector: [f64; 3]) -> [f64; 3] {

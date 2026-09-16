@@ -26,8 +26,9 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 //!
-//! A [`Renderer`] wraps a two or three dimensional field and samples it into a
-//! greyscale or colour [`Image`].
+//! A [`Renderer`] wraps a field of two to four dimensions and samples it into
+//! an [`Image`]: greyscale, colour, a lit height map, or with four dimensions
+//! a lit sphere through [`Renderer::globe`].
 //!
 //! With the `gpu` feature enabled, [`Instance::table_gpu`] runs the same
 //! computation as a compute shader through `wgpu`. With the `png` feature,
@@ -40,7 +41,7 @@ mod gpu;
 mod image;
 mod rng;
 
-pub use image::{Image, Palette, Relief, Renderer, Shape};
+pub use image::{Globe, Image, MAX_SAMPLES, Palette, Relief, Renderer, Shape};
 use rng::SplitMix64;
 
 /// Upper bound on `dims.len()`.
@@ -183,13 +184,10 @@ impl Instance {
             ));
         }
 
-        let mut cell = [0usize; MAX_DIMS];
-        let mut offset = [0f64; MAX_DIMS];
-        for i in 0..n {
-            let coord = point[i];
+        for (i, coord) in point.iter().enumerate() {
             let upper = self.dims[i] as f64;
             // Also rejects NaN, which fails every comparison.
-            if !(coord >= 0.0 && coord <= upper) {
+            if !(*coord >= 0.0 && *coord <= upper) {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     format!(
@@ -198,13 +196,30 @@ impl Instance {
                     ),
                 ));
             }
+        }
+
+        Ok(self.sample(point))
+    }
+
+    /// Noise at a point, with each coordinate pulled into the lattice instead
+    /// of being rejected for falling outside it.
+    ///
+    /// `point` must still carry one coordinate per dimension. This is what
+    /// callers that walk a surface through the field use, where a coordinate
+    /// can land a rounding error past the boundary.
+    pub(crate) fn sample(&self, point: &[f64]) -> f64 {
+        let n = self.dims.len();
+        let mut cell = [0usize; MAX_DIMS];
+        let mut offset = [0f64; MAX_DIMS];
+        for i in 0..n {
+            let coord = point[i].clamp(0.0, self.dims[i] as f64);
             // The upper boundary belongs to the last cell, at local offset 1.
             let base = (coord.floor() as usize).min(self.dims[i] - 1);
             cell[i] = base;
             offset[i] = coord - base as f64;
         }
 
-        Ok(self.eval(&cell[..n], &offset[..n]))
+        self.eval(&cell[..n], &offset[..n])
     }
 
     /// Noise on a refined lattice.
