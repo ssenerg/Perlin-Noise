@@ -28,7 +28,9 @@
 //!
 //! A [`Renderer`] wraps a field of two to four dimensions and samples it into
 //! an [`Image`]: greyscale, colour, a lit height map, or with four dimensions
-//! a lit sphere through [`Renderer::globe`].
+//! a lit sphere through [`Renderer::globe`]. [`Renderer::hair`] reads a two
+//! dimensional field as a force instead of a picture and draws the paths
+//! particles take through it.
 //!
 //! With the `gpu` feature enabled, [`Instance::table_gpu`] runs the same
 //! computation as a compute shader through `wgpu`. With the `png` feature,
@@ -38,9 +40,11 @@ use std::io::{Error, ErrorKind, Result};
 
 #[cfg(feature = "gpu")]
 mod gpu;
+mod hair;
 mod image;
 mod rng;
 
+pub use hair::Hair;
 pub use image::{Globe, Image, MAX_SAMPLES, Palette, Relief, Renderer, Shape};
 use rng::SplitMix64;
 
@@ -176,6 +180,92 @@ impl Instance {
     /// `[0, dims[i]]` on every axis. The result is 0 exactly at the
     /// intersections and stays within `±sqrt(n)` elsewhere.
     pub fn noise(&self, point: &[f64]) -> Result<f64> {
+        self.expect_inside(point)?;
+        Ok(self.sample(point))
+    }
+
+    /// Noise at a point, with each coordinate pulled into the lattice instead
+    /// of being rejected for falling outside it.
+    ///
+    /// `point` must still carry one coordinate per dimension. This is what
+    /// callers that walk a surface through the field use, where a coordinate
+    /// can land a rounding error past the boundary.
+    pub(crate) fn sample(&self, point: &[f64]) -> f64 {
+        let n = self.dims.len();
+        let mut cell = [0usize; MAX_DIMS];
+        let mut offset = [0f64; MAX_DIMS];
+        self.locate(point, &mut cell, &mut offset);
+
+        self.eval(&cell[..n], &offset[..n])
+    }
+
+    /// The gradients around a point blended into a single vector.
+    ///
+    /// [`Instance::noise`] blends the dot products of the surrounding cell's
+    /// corner gradients with the offset to each of them; this blends those
+    /// gradients themselves, under the same fade weights. The result is the
+    /// direction the lattice pulls in: exactly a corner's own gradient at an
+    /// intersection, a smooth turn between them in between, and never longer
+    /// than 1, since it is an average of unit vectors.
+    ///
+    /// `point` must have one coordinate per dimension and lie within
+    /// `[0, dims[i]]` on every axis, as for [`Instance::noise`].
+    pub fn force(&self, point: &[f64]) -> Result<Vec<f64>> {
+        self.expect_inside(point)?;
+        let mut into = vec![0f64; self.dims.len()];
+        self.pull(point, &mut into);
+        Ok(into)
+    }
+
+    /// [`Instance::force`] without the checks, writing into `into`, whose
+    /// length must be at least `dims.len()`. Coordinates are pulled into the
+    /// lattice rather than rejected, as in [`Instance::sample`].
+    pub(crate) fn pull(&self, point: &[f64], into: &mut [f64]) {
+        let n = self.dims.len();
+        let mut cell = [0usize; MAX_DIMS];
+        let mut offset = [0f64; MAX_DIMS];
+        self.locate(point, &mut cell, &mut offset);
+
+        let mut eased = [0f64; MAX_DIMS];
+        for i in 0..n {
+            eased[i] = fade(offset[i]);
+        }
+
+        into[..n].fill(0.0);
+        for corner in 0..(1usize << n) {
+            let mut weight = 1f64;
+            let mut flat = 0usize;
+            for i in 0..n {
+                let step = (corner >> i) & 1;
+                flat += (cell[i] + step) * self.strides[i];
+                weight *= if step == 1 { eased[i] } else { 1.0 - eased[i] };
+            }
+            if weight == 0.0 {
+                continue;
+            }
+
+            let gradient = &self.grid[flat * n..flat * n + n];
+            for (component, pull) in into[..n].iter_mut().zip(gradient) {
+                *component += weight * pull;
+            }
+        }
+    }
+
+    /// Cell each coordinate falls in and how far into it, with the point
+    /// pulled inside the lattice first.
+    fn locate(&self, point: &[f64], cell: &mut [usize], offset: &mut [f64]) {
+        for i in 0..self.dims.len() {
+            let coord = point[i].clamp(0.0, self.dims[i] as f64);
+            // The upper boundary belongs to the last cell, at local offset 1.
+            let base = (coord.floor() as usize).min(self.dims[i] - 1);
+            cell[i] = base;
+            offset[i] = coord - base as f64;
+        }
+    }
+
+    /// Rejects points with the wrong number of coordinates, a `NaN` among
+    /// them, or one outside the lattice.
+    fn expect_inside(&self, point: &[f64]) -> Result<()> {
         let n = self.dims.len();
         if point.len() != n {
             return Err(Error::new(
@@ -197,29 +287,7 @@ impl Instance {
                 ));
             }
         }
-
-        Ok(self.sample(point))
-    }
-
-    /// Noise at a point, with each coordinate pulled into the lattice instead
-    /// of being rejected for falling outside it.
-    ///
-    /// `point` must still carry one coordinate per dimension. This is what
-    /// callers that walk a surface through the field use, where a coordinate
-    /// can land a rounding error past the boundary.
-    pub(crate) fn sample(&self, point: &[f64]) -> f64 {
-        let n = self.dims.len();
-        let mut cell = [0usize; MAX_DIMS];
-        let mut offset = [0f64; MAX_DIMS];
-        for i in 0..n {
-            let coord = point[i].clamp(0.0, self.dims[i] as f64);
-            // The upper boundary belongs to the last cell, at local offset 1.
-            let base = (coord.floor() as usize).min(self.dims[i] - 1);
-            cell[i] = base;
-            offset[i] = coord - base as f64;
-        }
-
-        self.eval(&cell[..n], &offset[..n])
+        Ok(())
     }
 
     /// Noise on a refined lattice.

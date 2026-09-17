@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use perlin_noise::{Globe, Instance, Palette, Relief, Renderer, Shape};
+use perlin_noise::{Globe, Hair, Instance, Palette, Relief, Renderer, Shape};
 
 fn main() -> std::io::Result<()> {
     let out: PathBuf = std::env::args().nth(1).unwrap_or_else(|| ".".into()).into();
@@ -84,6 +84,42 @@ fn main() -> std::io::Result<()> {
             "{name}: {}x{} lit as {shape:?}",
             image.width(),
             image.height()
+        );
+    }
+
+    // The same two axes read as a force rather than a picture, and drawn
+    // where the particles it pushes around ended up. Wider cells than the
+    // lattice modes use, so a strand has room to run before the field turns
+    // it.
+    let combed = Renderer::new(Instance::new(vec![5, 5], seed)?)?;
+    // A quarter of the pixels the default count is pitched at, so a quarter
+    // of the strands keeps the coat as dense.
+    let coat = Hair {
+        count: 11_000,
+        ..Default::default()
+    };
+    for (hair, name) in [
+        (coat, "noise-hair.png"),
+        (
+            Hair {
+                color_from_field: true,
+                ..coat
+            },
+            "noise-hair-relief.png",
+        ),
+    ] {
+        let image = combed.hair(513, 513, &hair)?;
+        image.write_png(out.join(name))?;
+        println!(
+            "{name}: {}x{} from {} particles through {}",
+            image.width(),
+            image.height(),
+            hair.count,
+            if hair.color_from_field {
+                "the relief".to_string()
+            } else {
+                format!("{:?}", hair.palette)
+            }
         );
     }
 

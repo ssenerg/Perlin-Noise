@@ -6,11 +6,11 @@
 
 use std::io::{Error, ErrorKind, Result};
 
-use perlin_noise::{Globe, Image, Instance, Palette, Relief, Renderer, Shape};
+use perlin_noise::{Globe, Hair, Image, Instance, Palette, Relief, Renderer, Shape};
 
 const USAGE: &str = "\
 Options:
-  --mode <gray|color|channels|relief|globe>  what to draw (default relief)
+  --mode <gray|color|channels|relief|globe|hair>  what to draw (default relief)
   --cells <n|down,across>   noise cells per axis (default 8, globe 7,2)
   --detail <n|down,across>  samples per cell, so the image comes out
                     cells*detail+1 pixels on each axis (default 64)
@@ -29,6 +29,47 @@ For --mode globe, a sphere carved out of a four dimensional field:
                     pixel four times; 1 leaves the highlights speckled (2)
   --palette <name>  colour the sphere by height through this ramp instead of
                     taking red, green and blue off the fourth axis
+
+For --mode hair, particles let loose in the field and drawn where they went.
+Each one is pulled by the lattice vectors around it, so --steps times --step
+is how long it is followed and --force over --drag about how fast it goes:
+  --size <n|wide,tall>  image in pixels; --detail plays no part here (1024)
+  --count <n>       how many particles, one strand each; how dense the coat
+                    looks is this against the pixel count, so a bigger
+                    picture wants proportionally more (45000)
+  --steps <n>       steps each particle is followed for (170)
+  --step <f>        time one step covers; smaller only traces the same path
+                    more finely (0.05)
+  --force <f>       how hard the lattice pulls, at most this per unit (1.0)
+  --drag <f>        how fast a particle loses speed; higher pins it to the
+                    field, lower lets it overshoot and circle (3.0)
+  --swirl <f>       degrees the force is turned through: 0 runs the particles
+                    into the field, near 90 sends them round it (62)
+  --thickness <f>   how thick one strand is drawn, in pixels (1.3)
+  --opacity <f>     how much of what lies under it a strand hides (0.95)
+  --frizz <f>       how hard each strand is pushed a way of its own, as a
+                    fraction of --force; at 0 they lie perfectly parallel and
+                    the coat comes out combed flat (0.16)
+  --jitter <f>      how unlike each other the strands are in brightness,
+                    thickness and length; at 0 they merge into a smooth wash
+                    and stop looking like hair (0.6)
+  --depth <f>       how much darker the hair at the back of the coat is than
+                    the hair at the front (0.72)
+  --taper <f>       fraction of a strand it narrows to a point over at each
+                    end, 0 to 0.5 (0.22)
+  --tint            colour the coat with the relief of this same field, so
+                    each strand is painted with the glossy height map rather
+                    than a grey ramp. --palette, --shape, --height, --gamma
+                    and --occlusion then belong to that map; without them it
+                    is the crimson liquid look
+  --palette <name>  without --tint, a ramp from the background to a strand in
+                    full sheen (gray); with it, the ramp the relief is
+                    coloured through (crimson)
+
+Its lighting shares the flags below, with its own defaults: --light (z plays
+no part), --ambient 0.05 for a strand lying along the light, --diffuse 0.42
+for one lying across it, and --specular 0.62 with --gloss 14 for the band of
+sheen that runs over hair where it turns square to the light.
 
 Lighting, for --mode relief and --mode globe, defaults in brackets as
 relief/globe:
@@ -67,6 +108,7 @@ struct Options {
     relief: Relief,
     fill: f64,
     samples: usize,
+    hair: Hair,
     out: String,
     gpu: bool,
 }
@@ -76,18 +118,26 @@ impl Options {
     /// darkening than the flat relief, so each mode starts from its own.
     fn for_mode(mode: &str) -> Self {
         let globe = Globe::default();
+        let hair = Hair::default();
         let sphere = mode == "globe";
         Self {
             mode: mode.to_string(),
-            cells: if sphere {
-                vec![7, GLOBE_DEPTH]
-            } else {
-                vec![8]
+            cells: match mode {
+                "globe" => vec![7, GLOBE_DEPTH],
+                // Hair is drawn along paths rather than at sample points, so
+                // wide cells are the room a strand has to run rather than a
+                // cost; too many and every strand is a short stub.
+                "hair" => vec![5],
+                _ => vec![8],
             },
             detail: vec![64],
             size: vec![1024],
             seed: 1,
-            palette: Palette::Crimson,
+            palette: if mode == "hair" {
+                hair.palette
+            } else {
+                Palette::Crimson
+            },
             palette_given: false,
             relief: if sphere {
                 globe.surface
@@ -96,6 +146,7 @@ impl Options {
             },
             fill: globe.fill,
             samples: globe.samples,
+            hair,
             out: "noise.png".into(),
             gpu: false,
         }
@@ -122,9 +173,13 @@ fn parse() -> Result<Options> {
     let mut args = args.into_iter();
 
     while let Some(flag) = args.next() {
-        // Every flag but --gpu takes a value.
+        // Every flag but these takes a value.
         if flag == "--gpu" {
             options.gpu = true;
+            continue;
+        }
+        if flag == "--tint" {
+            options.hair.color_from_field = true;
             continue;
         }
         if flag == "--help" || flag == "-h" {
@@ -154,6 +209,11 @@ fn parse() -> Result<Options> {
                 .parse()
                 .map_err(|_| bad(format!("{flag} wants a number, got {value}")))
         };
+        let whole = || -> Result<usize> {
+            value
+                .parse()
+                .map_err(|_| bad(format!("{flag} wants a whole number, got {value}")))
+        };
 
         match flag.as_str() {
             "--mode" => options.mode = value.clone(),
@@ -161,24 +221,53 @@ fn parse() -> Result<Options> {
             "--detail" => options.detail = per_axis()?,
             "--size" => options.size = per_axis()?,
             "--fill" => options.fill = number()?,
-            "--samples" => {
-                options.samples = value
-                    .parse()
-                    .map_err(|_| bad(format!("--samples wants a whole number, got {value}")))?
-            }
+            "--samples" => options.samples = whole()?,
+            "--count" => options.hair.count = whole()?,
+            "--steps" => options.hair.steps = whole()?,
+            "--step" => options.hair.step = number()?,
+            "--force" => options.hair.force = number()?,
+            "--drag" => options.hair.drag = number()?,
+            "--swirl" => options.hair.swirl = number()?,
+            "--thickness" => options.hair.thickness = number()?,
+            "--opacity" => options.hair.opacity = number()?,
+            "--frizz" => options.hair.frizz = number()?,
+            "--jitter" => options.hair.jitter = number()?,
+            "--depth" => options.hair.depth = number()?,
+            "--taper" => options.hair.taper = number()?,
             "--seed" => {
                 options.seed = value
                     .parse()
                     .map_err(|_| bad(format!("--seed wants a whole number, got {value}")))?
             }
             "--out" => options.out = value.clone(),
-            "--height" => options.relief.height = number()?,
-            "--gamma" => options.relief.gamma = number()?,
-            "--occlusion" => options.relief.occlusion = number()?,
-            "--ambient" => options.relief.ambient = number()?,
-            "--diffuse" => options.relief.diffuse = number()?,
-            "--specular" => options.relief.specular = number()?,
-            "--gloss" => options.relief.gloss = number()?,
+            "--height" => {
+                options.relief.height = number()?;
+                options.hair.surface.height = options.relief.height;
+            }
+            "--gamma" => {
+                options.relief.gamma = number()?;
+                options.hair.surface.gamma = options.relief.gamma;
+            }
+            "--occlusion" => {
+                options.relief.occlusion = number()?;
+                options.hair.surface.occlusion = options.relief.occlusion;
+            }
+            "--ambient" => {
+                options.relief.ambient = number()?;
+                options.hair.ambient = options.relief.ambient;
+            }
+            "--diffuse" => {
+                options.relief.diffuse = number()?;
+                options.hair.diffuse = options.relief.diffuse;
+            }
+            "--specular" => {
+                options.relief.specular = number()?;
+                options.hair.specular = options.relief.specular;
+            }
+            "--gloss" => {
+                options.relief.gloss = number()?;
+                options.hair.gloss = options.relief.gloss;
+            }
             "--light" => {
                 let parts: Vec<&str> = value.split(',').collect();
                 let [x, y, z] = parts.as_slice() else {
@@ -190,6 +279,10 @@ fn parse() -> Result<Options> {
                         .parse()
                         .map_err(|_| bad(format!("--light wants numbers, got {part}")))?;
                 }
+                // Hair lies flat in the image, so it only reads the two axes
+                // that run across it.
+                options.hair.light = [options.relief.light[0], options.relief.light[1]];
+                options.hair.surface.light = options.relief.light;
             }
             "--palette" => {
                 options.palette = match value.as_str() {
@@ -202,6 +295,8 @@ fn parse() -> Result<Options> {
                     other => return Err(bad(format!("unknown palette {other}"))),
                 };
                 options.relief.palette = options.palette;
+                options.hair.palette = options.palette;
+                options.hair.surface.palette = options.palette;
                 options.palette_given = true;
             }
             "--shape" => {
@@ -210,7 +305,8 @@ fn parse() -> Result<Options> {
                     "billow" => Shape::Billow,
                     "ridged" => Shape::Ridged,
                     other => return Err(bad(format!("unknown shape {other}"))),
-                }
+                };
+                options.hair.surface.shape = options.relief.shape;
             }
             other => return Err(bad(format!("unknown option {other}"))),
         }
@@ -259,6 +355,19 @@ fn draw(options: &Options) -> Result<Image> {
         "color" | "colour" => renderer.colored(&divisors, options.palette),
         "channels" => renderer.rgb_channels(&divisors),
         "relief" => renderer.relief(&divisors, &options.relief),
+        "hair" => {
+            let size = both_axes(&options.size);
+            renderer.hair(
+                size[0],
+                size[1],
+                &Hair {
+                    // One seed for the whole picture: it builds the field and
+                    // decides where the particles are dropped into it.
+                    seed: options.seed,
+                    ..options.hair
+                },
+            )
+        }
         "globe" => {
             let size = both_axes(&options.size);
             renderer.globe(

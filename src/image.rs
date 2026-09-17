@@ -20,7 +20,7 @@ use crate::{Instance, PARALLEL_THRESHOLD, Table};
 
 /// Samples a noise field into pixels.
 pub struct Renderer {
-    noise: Instance,
+    pub(crate) noise: Instance,
     #[cfg(feature = "gpu")]
     gpu: bool,
 }
@@ -340,7 +340,7 @@ impl Renderer {
         // A look over the whole sphere first, because the spans that turn
         // noise into height and colour are measured over all of it.
         let mut surface = vec![Surface::default(); width * height];
-        in_parallel(&mut surface, |index, point| {
+        in_parallel(&mut surface, PARALLEL_THRESHOLD, |index, point| {
             let at = [(index % width) as f64 + 0.5, (index / width) as f64 + 0.5];
             let Some((direction, cover)) = look(at, 1.0, centre, radius) else {
                 return;
@@ -378,7 +378,7 @@ impl Renderer {
         let grid = globe.samples;
         let span = 1.0 / grid as f64;
         let mut pixels = vec![[0u8; 3]; width * height];
-        in_parallel(&mut pixels, |index, pixel| {
+        in_parallel(&mut pixels, PARALLEL_THRESHOLD, |index, pixel| {
             let corner = [(index % width) as f64, (index / width) as f64];
             let mut light = [0.0; 3];
             let mut covered = 0.0;
@@ -432,7 +432,7 @@ impl Renderer {
         Ok(self.noise.table_shape(divisors)?[2])
     }
 
-    fn expect_dims(&self, wanted: usize) -> Result<()> {
+    pub(crate) fn expect_dims(&self, wanted: usize) -> Result<()> {
         let n = self.noise.dims().len();
         if n != wanted {
             return Err(Error::new(
@@ -459,13 +459,13 @@ impl Renderer {
 /// mapping that bound straight to bytes would waste most of the range and leave
 /// a washed out image. Each image is scaled by its own extremes instead; sample
 /// [`Instance::table`] directly if you need values comparable across images.
-struct Span {
+pub(crate) struct Span {
     min: f64,
     max: f64,
 }
 
 impl Span {
-    fn of(values: impl IntoIterator<Item = f64>) -> Self {
+    pub(crate) fn of(values: impl IntoIterator<Item = f64>) -> Self {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         for value in values {
@@ -477,7 +477,7 @@ impl Span {
 
     /// Where `value` sits in the range, from 0.0 to 1.0. A flat field has no
     /// range to speak of and lands in the middle.
-    fn position(&self, value: f64) -> f64 {
+    pub(crate) fn position(&self, value: f64) -> f64 {
         if self.max > self.min {
             ((value - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
         } else {
@@ -491,7 +491,7 @@ impl Span {
 }
 
 /// An sRGB colour byte as linear light.
-fn to_linear(channel: u8) -> f64 {
+pub(crate) fn to_linear(channel: u8) -> f64 {
     let value = f64::from(channel) / 255.0;
     if value <= 0.04045 {
         value / 12.92
@@ -501,7 +501,7 @@ fn to_linear(channel: u8) -> f64 {
 }
 
 /// Linear light back to an sRGB colour byte.
-fn to_srgb(value: f64) -> u8 {
+pub(crate) fn to_srgb(value: f64) -> u8 {
     let value = value.clamp(0.0, 1.0);
     let encoded = if value <= 0.003_130_8 {
         value * 12.92
@@ -566,9 +566,16 @@ fn look(at: [f64; 2], span: f64, centre: [f64; 2], radius: f64) -> Option<([f64;
     Some((normalize([x, y, z]), cover))
 }
 
-/// Runs `each` over every item together with its index, split across threads.
-fn in_parallel<T: Send>(items: &mut [T], each: impl Fn(usize, &mut T) + Send + Sync) {
-    if items.len() < PARALLEL_THRESHOLD {
+/// Runs `each` over every item together with its index, split across threads
+/// once there are at least `least` of them. How much work one item is worth
+/// differs by caller, which is why the threshold comes in rather than being
+/// fixed: a pixel is cheap, a whole strand of hair is not.
+pub(crate) fn in_parallel<T: Send>(
+    items: &mut [T],
+    least: usize,
+    each: impl Fn(usize, &mut T) + Send + Sync,
+) {
+    if items.len() < least {
         for (index, item) in items.iter_mut().enumerate() {
             each(index, item);
         }
@@ -783,7 +790,7 @@ pub enum Shape {
 }
 
 impl Shape {
-    fn apply(&self, value: f64) -> f64 {
+    pub(crate) fn apply(&self, value: f64) -> f64 {
         match self {
             Shape::Smooth => value,
             Shape::Billow => value.abs(),
@@ -930,10 +937,10 @@ impl Palette {
 
 /// An 8 bit image, rows top to bottom, `channels` bytes per pixel.
 pub struct Image {
-    width: usize,
-    height: usize,
-    channels: usize,
-    pixels: Vec<u8>,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) channels: usize,
+    pub(crate) pixels: Vec<u8>,
 }
 
 impl Image {

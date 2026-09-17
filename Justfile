@@ -28,6 +28,27 @@ globe seed="1" *flags:
         --mode globe --size 1440 --seed {{seed}} \
         --out {{out}}/globe-{{seed}}.png {{flags}}
 
+# A coat of hair combed by the field, e.g. `just hair 3 --palette crimson`.
+hair seed="1" *flags:
+    cargo run --quiet --release --example image --features png -- \
+        --mode hair --size 1440 --count 90000 --seed {{seed}} \
+        --out {{out}}/hair-{{seed}}.png {{flags}}
+
+# The same coat coloured by the relief of the field, e.g.
+# `just hair-color 7 --palette azure`. The strands are the grey coat; the
+# colour under them is the glossy height map.
+hair-color seed="1" *flags:
+    cargo run --quiet --release --example image --features png -- \
+        --mode hair --tint --size 1440 --count 90000 --seed {{seed}} \
+        --out {{out}}/hair-color-{{seed}}.png {{flags}}
+
+# The same coat at 4K, 3841x2161. Strands are counted against the pixels, so
+# this needs proportionally more of them to stay as dense.
+hair-wallpaper seed="1" *flags:
+    cargo run --quiet --release --example image --features png -- \
+        --mode hair --cells 5,9 --size 3841x2161 --count 360000 --seed {{seed}} \
+        --out {{out}}/hair-4k-{{seed}}.png {{flags}}
+
 # The glossy liquid look at screen size, one file per seed.
 liquid seed="1" *flags:
     cargo run --quiet --release --example image --features png -- \

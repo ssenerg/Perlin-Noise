@@ -1,4 +1,4 @@
-use perlin_noise::{Globe, Instance, Palette, Relief, Renderer, Shape};
+use perlin_noise::{Globe, Hair, Instance, Palette, Relief, Renderer, Shape};
 
 fn renderer(dims: Vec<usize>, seed: u64) -> Renderer {
     Renderer::new(Instance::new(dims, seed).unwrap()).unwrap()
@@ -19,6 +19,7 @@ fn each_mode_needs_its_own_dimension_count() {
     assert!(flat.grayscale(&[2, 2]).is_ok());
     assert!(flat.colored(&[2, 2], Palette::Heat).is_ok());
     assert!(flat.relief(&[2, 2], &Relief::default()).is_ok());
+    assert!(flat.hair(32, 32, &Hair::default()).is_ok());
     assert!(flat.rgb_channels(&[2, 2]).is_err());
     assert!(flat.rgb_palette(&[2, 2], 0, Palette::Heat).is_err());
     assert!(flat.globe(8, 8, &Globe::default()).is_err());
@@ -30,12 +31,14 @@ fn each_mode_needs_its_own_dimension_count() {
     assert!(deep.colored(&[2, 2, 2], Palette::Heat).is_err());
     assert!(deep.relief(&[2, 2, 2], &Relief::default()).is_err());
     assert!(deep.globe(8, 8, &Globe::default()).is_err());
+    assert!(deep.hair(32, 32, &Hair::default()).is_err());
 
     let round = renderer(vec![3, 3, 3, 1], 1);
     assert!(round.globe(8, 8, &Globe::default()).is_ok());
     assert!(round.grayscale(&[2, 2, 2, 2]).is_err());
     assert!(round.rgb_channels(&[2, 2, 2, 2]).is_err());
     assert!(round.relief(&[2, 2, 2, 2], &Relief::default()).is_err());
+    assert!(round.hair(32, 32, &Hair::default()).is_err());
 }
 
 #[test]
@@ -608,6 +611,385 @@ fn globe_is_the_same_picture_every_time() {
             .into_pixels()
     };
     assert_eq!(of(), of());
+}
+
+/// Total brightness of an image, which for a palette that starts at black is
+/// how much hair ended up in it.
+fn brightness(pixels: &[u8]) -> u64 {
+    pixels.iter().map(|byte| u64::from(*byte)).sum()
+}
+
+#[test]
+fn hair_takes_the_size_it_is_asked_for() {
+    let flat = renderer(vec![4, 4], 55);
+    let image = flat.hair(120, 80, &Hair::default()).unwrap();
+    assert_eq!((image.width(), image.height()), (120, 80));
+    assert_eq!(image.channels(), 3);
+    assert_eq!(image.pixels().len(), 120 * 80 * 3);
+
+    assert!(flat.hair(0, 80, &Hair::default()).is_err());
+    assert!(flat.hair(120, 0, &Hair::default()).is_err());
+}
+
+#[test]
+fn hair_rejects_knobs_it_cannot_draw_with() {
+    let flat = renderer(vec![4, 4], 55);
+    let with = |hair: Hair| flat.hair(64, 64, &hair);
+    let ok = Hair {
+        count: 32,
+        ..Default::default()
+    };
+
+    assert!(with(ok).is_ok());
+    assert!(with(Hair { step: 0.0, ..ok }).is_err());
+    assert!(with(Hair { step: -0.1, ..ok }).is_err());
+    assert!(with(Hair { drag: -1.0, ..ok }).is_err());
+    assert!(
+        with(Hair {
+            force: f64::NAN,
+            ..ok
+        })
+        .is_err()
+    );
+    assert!(
+        with(Hair {
+            thickness: 0.0,
+            ..ok
+        })
+        .is_err()
+    );
+    assert!(
+        with(Hair {
+            opacity: -0.1,
+            ..ok
+        })
+        .is_err()
+    );
+    assert!(with(Hair { frizz: -0.1, ..ok }).is_err());
+    assert!(with(Hair { jitter: 1.1, ..ok }).is_err());
+    assert!(with(Hair { depth: 1.1, ..ok }).is_err());
+    assert!(with(Hair { taper: 0.5, ..ok }).is_ok());
+    assert!(with(Hair { taper: 0.6, ..ok }).is_err());
+    assert!(with(Hair { taper: -0.1, ..ok }).is_err());
+    assert!(with(Hair { ambient: 1.0, ..ok }).is_ok());
+    assert!(with(Hair { ambient: 1.1, ..ok }).is_err());
+    assert!(with(Hair { diffuse: 1.1, ..ok }).is_err());
+    assert!(
+        with(Hair {
+            specular: 1.1,
+            ..ok
+        })
+        .is_err()
+    );
+    assert!(with(Hair { gloss: 0.0, ..ok }).is_err());
+}
+
+#[test]
+fn a_coat_is_laid_down_front_over_back() {
+    let flat = renderer(vec![4, 4], 45);
+    let of = |hair: Hair| flat.hair(160, 160, &hair).unwrap().into_pixels();
+    let base = Hair {
+        count: 4000,
+        ..Default::default()
+    };
+
+    // Strands are painted over each other rather than added together, so a
+    // coat that hides nothing of itself is a different picture from one that
+    // does, and the order they go down in is what the depth decides.
+    assert_ne!(
+        of(Hair {
+            opacity: 1.0,
+            ..base
+        }),
+        of(Hair {
+            opacity: 0.4,
+            ..base
+        })
+    );
+
+    // Burying the hair at the back darkens the coat without moving a strand.
+    let total = |hair| brightness(&of(hair));
+    assert!(total(Hair { depth: 0.0, ..base }) > total(Hair { depth: 0.5, ..base }));
+    assert!(total(Hair { depth: 0.5, ..base }) > total(Hair { depth: 1.0, ..base }));
+}
+
+#[test]
+fn strands_are_told_apart_by_jitter_and_frizz() {
+    let flat = renderer(vec![4, 4], 29);
+    let of = |hair: Hair| flat.hair(160, 160, &hair).unwrap().into_pixels();
+    // Dense enough to close over the background, so what is measured below is
+    // the coat itself rather than the gaps in it.
+    let base = Hair {
+        count: 16_000,
+        ..Default::default()
+    };
+
+    // With neither, every strand is as bright as its neighbours and follows
+    // the same path they do, so the coat collapses into a smooth wash. How
+    // far one pixel sits from the next is the measure of that: hair one can
+    // pick single strands out of is rough from pixel to pixel, a wash is not.
+    let grain = |pixels: &[u8]| {
+        let greys: Vec<u64> = pixels.chunks(3).map(|pixel| u64::from(pixel[0])).collect();
+        let steps: u64 = greys.windows(2).map(|pair| pair[0].abs_diff(pair[1])).sum();
+        steps / greys.len() as u64
+    };
+
+    let flat_coat = of(Hair {
+        jitter: 0.0,
+        frizz: 0.0,
+        ..base
+    });
+    assert!(
+        grain(&of(base)) > 2 * grain(&flat_coat),
+        "{} against {}",
+        grain(&of(base)),
+        grain(&flat_coat)
+    );
+
+    // Frizz is a push per strand rather than per particle, so it moves them
+    // without touching how they are drawn.
+    assert_ne!(
+        of(Hair { frizz: 0.0, ..base }),
+        of(Hair { frizz: 0.3, ..base })
+    );
+}
+
+#[test]
+fn a_particle_with_no_force_on_it_never_moves() {
+    // Nothing pushes the particles, not even the frizz, which is a fraction
+    // of the same force. Every strand stays the point it started at, and a
+    // particle that never moved leaves no strand, so the picture is bare
+    // background. That the field is what moves them is the whole of this mode.
+    let hair = Hair {
+        force: 0.0,
+        ..Default::default()
+    };
+    let image = renderer(vec![4, 4], 77).hair(96, 96, &hair).unwrap();
+
+    let background = hair.palette.color(0.0);
+    for pixel in image.pixels().chunks(3) {
+        assert_eq!(pixel, background, "something was drawn without a force");
+    }
+    assert_eq!(image.pixels().chunks(3).count(), 96 * 96);
+}
+
+#[test]
+fn hair_grows_over_the_picture() {
+    let image = renderer(vec![4, 4], 21)
+        .hair(200, 200, &Hair::default())
+        .unwrap();
+
+    // Most of the picture has to be hair rather than background, and it has
+    // to be lit over a range: a coat all of one tone is not hair.
+    let mut bands = [0usize; 8];
+    let mut covered = 0;
+    for pixel in image.pixels().chunks(3) {
+        let value = pixel.iter().map(|byte| usize::from(*byte)).sum::<usize>() / 3;
+        bands[value * 8 / 256] += 1;
+        if value > 8 {
+            covered += 1;
+        }
+    }
+
+    assert!(
+        covered * 100 / (200 * 200) >= 80,
+        "only {covered} pixels drawn"
+    );
+    assert!(
+        bands.iter().filter(|count| **count > 0).count() >= 6,
+        "the coat is all one tone: {bands:?}"
+    );
+}
+
+#[test]
+fn a_denser_coat_is_grown_from_more_particles() {
+    let flat = renderer(vec![4, 4], 34);
+    let of = |count| {
+        brightness(
+            flat.hair(
+                128,
+                128,
+                &Hair {
+                    count,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .pixels(),
+        )
+    };
+
+    assert!(of(0) < of(200));
+    assert!(of(200) < of(2000));
+}
+
+#[test]
+fn drag_holds_the_particles_back() {
+    let flat = renderer(vec![4, 4], 88);
+    let of = |drag| {
+        brightness(
+            flat.hair(
+                128,
+                128,
+                &Hair {
+                    drag,
+                    count: 1500,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .pixels(),
+        )
+    };
+
+    // The harder the drag, the slower a particle settles at and the less
+    // ground its strand covers in the steps it is given.
+    assert!(of(2.0) > of(8.0));
+    assert!(of(8.0) > of(32.0));
+}
+
+#[test]
+fn taper_narrows_the_ends_of_a_strand() {
+    let flat = renderer(vec![4, 4], 13);
+    let of = |taper| {
+        brightness(
+            flat.hair(
+                128,
+                128,
+                &Hair {
+                    taper,
+                    count: 1500,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .pixels(),
+        )
+    };
+
+    assert!(of(0.0) > of(0.25));
+    assert!(of(0.25) > of(0.5));
+}
+
+#[test]
+fn swirl_and_the_light_change_the_picture() {
+    let flat = renderer(vec![4, 4], 66);
+    let of = |hair: Hair| flat.hair(128, 128, &hair).unwrap().into_pixels();
+    let base = Hair {
+        count: 1500,
+        ..Default::default()
+    };
+
+    // Turning the force sends the particles somewhere else entirely.
+    assert_ne!(
+        of(Hair { swirl: 0.0, ..base }),
+        of(Hair {
+            swirl: 90.0,
+            ..base
+        })
+    );
+
+    // A strand is lit by how squarely it lies across the light, so moving the
+    // light a quarter turn relights the same coat. Pointing it the other way
+    // along the same line cannot, since a strand has no front or back.
+    let across = of(Hair {
+        light: [1.0, 0.0],
+        ..base
+    });
+    assert_ne!(
+        across,
+        of(Hair {
+            light: [0.0, 1.0],
+            ..base
+        })
+    );
+    assert_eq!(
+        across,
+        of(Hair {
+            light: [-2.0, 0.0],
+            ..base
+        })
+    );
+}
+
+#[test]
+fn hair_is_the_same_picture_every_time() {
+    // Threads take a band of rows each, so a picture that came out the same
+    // twice also came out independent of how the rows were split.
+    let of = || {
+        renderer(vec![4, 4], 7)
+            .hair(96, 96, &Hair::default())
+            .unwrap()
+            .into_pixels()
+    };
+    assert_eq!(of(), of());
+
+    // The lattice seed and the seed the particles start from are separate.
+    let moved = renderer(vec![4, 4], 7)
+        .hair(
+            96,
+            96,
+            &Hair {
+                seed: 8,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .into_pixels();
+    assert_ne!(of(), moved);
+}
+
+#[test]
+fn hair_tinted_from_relief_carries_the_relief_colour() {
+    let flat = renderer(vec![4, 4], 7);
+    let grey = Hair {
+        count: 4000,
+        ..Default::default()
+    };
+    let tinted = Hair {
+        color_from_field: true,
+        ..grey
+    };
+    let grey = flat.hair(128, 128, &grey).unwrap();
+    let tinted = flat.hair(128, 128, &tinted).unwrap();
+
+    assert_eq!(
+        (tinted.width(), tinted.height()),
+        (grey.width(), grey.height())
+    );
+    assert_ne!(tinted.pixels(), grey.pixels());
+
+    // Crimson is red all the way along, so a coat painted with that relief
+    // cannot come out greyscale: red has to lead the other two channels.
+    let mut redder = 0;
+    for pixel in tinted.pixels().chunks(3) {
+        if pixel[0] > pixel[1].max(pixel[2]) + 8 {
+            redder += 1;
+        }
+    }
+    assert!(
+        redder * 100 / (128 * 128) >= 20,
+        "only {redder} pixels are redder than they are green or blue"
+    );
+
+    // A different relief is a different coat, not a re-shading of the same
+    // grey hairs.
+    let azure = flat
+        .hair(
+            128,
+            128,
+            &Hair {
+                color_from_field: true,
+                surface: Relief {
+                    palette: Palette::Azure,
+                    ..Relief::default()
+                },
+                count: 4000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_ne!(azure.pixels(), tinted.pixels());
 }
 
 #[cfg(feature = "png")]

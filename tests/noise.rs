@@ -35,6 +35,40 @@ fn lattice_has_one_unit_gradient_per_intersection() {
 }
 
 #[test]
+fn force_blends_the_gradients_around_a_point() {
+    let noise = Instance::new(vec![3, 2], 99).unwrap();
+
+    // A point sitting on an intersection feels that intersection alone, since
+    // the fade weights hand it everything.
+    for x in 0..4 {
+        for y in 0..3 {
+            let at = [x as f64, y as f64];
+            let force = noise.force(&at).unwrap();
+            for (blended, stored) in force.iter().zip(noise.gradient(&[x, y]).unwrap()) {
+                assert!((blended - stored).abs() < 1e-12, "{blended} vs {stored}");
+            }
+        }
+    }
+
+    // Anywhere else it is an average of unit vectors, so it can only be
+    // shorter.
+    for step in 0..40 {
+        let at = [step as f64 * 0.075, 2.0 - step as f64 * 0.05];
+        let force = noise.force(&at).unwrap();
+        assert_eq!(force.len(), 2);
+        let norm = force.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(norm <= 1.0 + 1e-12, "force of length {norm}");
+    }
+
+    // Rejected on the same terms as the noise itself.
+    assert!(noise.force(&[3.0, 2.0]).is_ok());
+    assert!(noise.force(&[3.1, 2.0]).is_err());
+    assert!(noise.force(&[-0.1, 1.0]).is_err());
+    assert!(noise.force(&[f64::NAN, 1.0]).is_err());
+    assert!(noise.force(&[1.0]).is_err());
+}
+
+#[test]
 fn same_seed_gives_the_same_field() {
     let a = Instance::new(vec![4, 3], 12345).unwrap();
     let b = Instance::new(vec![4, 3], 12345).unwrap();
