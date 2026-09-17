@@ -1,8 +1,8 @@
 """Perlin noise in any number of dimensions, and pictures of it.
 
-Install with ``maturin develop`` from the repo, or ``pip install .``. After
-that, ``help(perlin_noise)`` and ``help(perlin_noise.Instance)`` are the
-docs: every public type and helper below has a docstring.
+Install with ``pip install perlin-noise-rs``, or ``maturin develop`` from
+the repo. After that, ``help(perlin_noise)`` and ``help(perlin_noise.Instance)``
+are the docs: every public type and helper below has a docstring.
 
 A field is an :class:`Instance`. ``dims`` counts *cells* per axis, so
 ``[8, 8]`` is an 8×8 grid. The same ``seed`` always rebuilds the same lattice.

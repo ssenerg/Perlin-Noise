@@ -3,25 +3,54 @@ requires = ["maturin>=1.8,<2"]
 build-backend = "maturin"
 
 [project]
-name = "perlin-noise"
-version = "0.1.0"
+name = "perlin-noise-rs"
+dynamic = ["version"]
 description = "Perlin noise in any number of dimensions, with a renderer that turns a field into an image."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "ssenerg", email = "amirhossein.pdn@gmail.com" }]
 keywords = ["perlin", "noise", "procedural", "image"]
 classifiers = [
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Multimedia :: Graphics",
     "Typing :: Typed",
 ]
 
 [project.urls]
-Homepage = "https://github.com/ssenerg/perlin-noise"
+Homepage = "https://github.com/ssenerg/Perlin-Noise"
+Repository = "https://github.com/ssenerg/Perlin-Noise"
+Issues = "https://github.com/ssenerg/Perlin-Noise/issues"
 
 [tool.maturin]
 python-source = "python"
 module-name = "perlin_noise._native"
 features = ["python", "pyo3/extension-module"]
 include = ["python/perlin_noise/py.typed", "python/perlin_noise/*.pyi"]
+
+# Trusted publishing: no PyPI token in GitHub secrets. Register a pending
+# publisher at https://pypi.org/manage/account/publishing/ before the first tag.
+# Wheels for the usual desktops and servers; not every exotic arch.
+[tool.maturin.generate-ci.github]
+trusted-publishing = true
+publishing-environment = "pypi"
+pytest = true
+
+[tool.maturin.generate-ci.github.linux]
+targets = ["x86_64", "aarch64"]
+
+[tool.maturin.generate-ci.github.musllinux]
+targets = ["x86_64", "aarch64"]
+
+[tool.maturin.generate-ci.github.windows]
+targets = ["x64"]
+
+[tool.maturin.generate-ci.github.macos]
+targets = ["x86_64", "aarch64"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_perlin_noise.py"]

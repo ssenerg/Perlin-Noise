@@ -2,6 +2,9 @@
 name = "perlin-noise"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Perlin noise in any number of dimensions, with a renderer that turns a field into an image."
+repository = "https://github.com/ssenerg/Perlin-Noise"
 readme = "README.md"
 
 [lib]

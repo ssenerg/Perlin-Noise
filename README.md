@@ -301,9 +301,14 @@ available, so falling back to `table` is always an option.
 
 ## Python
 
-The same library, installed as a package. After `pip install .` or
-`just python`, `help(perlin_noise)` and `help(perlin_noise.relief)` are the
-docs; stubs ship with the wheel so editors see them too.
+The same library, on PyPI as [`perlin-noise-rs`](https://pypi.org/project/perlin-noise-rs/)
+(`perlin-noise` is already taken). After install, `help(perlin_noise)` and
+`help(perlin_noise.relief)` are the docs; stubs ship with the wheel so editors
+see them too.
+
+```sh
+pip install perlin-noise-rs
+```
 
 `examples/` has the runnable Python:
 
@@ -331,6 +336,33 @@ python examples/noise.py
 `relief`, `hair`, `globe`, `grayscale`, `colored` and `channels` build the
 field and render in one call. `Instance` and `Renderer` are there when you
 want the pieces.
+
+## Publishing to PyPI
+
+Wheels are built in GitHub Actions and uploaded on a version tag. There is no
+API token: PyPI trusts this repository through OpenID Connect.
+
+1. Push `.github/workflows/CI.yml` to `master`.
+2. In the GitHub repo, create an environment named `pypi` (Settings →
+   Environments). A required reviewer is optional but useful.
+3. On PyPI, under [Publishing](https://pypi.org/manage/account/publishing/),
+   add a **pending** trusted publisher:
+   - PyPI project name: `perlin-noise-rs`
+   - Owner: `ssenerg`
+   - Repository: `Perlin-Noise`
+   - Workflow name: `CI.yml`
+   - Environment name: `pypi`
+4. Bump `version` in `Cargo.toml` if this is not the first release, then tag
+   and push:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The tag can be `v0.1.0` or `0.1.0`; what lands on PyPI is the version in
+`Cargo.toml`. The pending publisher becomes a normal one after the first
+successful upload.
 
 ## Development
 
