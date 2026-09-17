@@ -305,26 +305,32 @@ The same library, installed as a package. After `pip install .` or
 `just python`, `help(perlin_noise)` and `help(perlin_noise.relief)` are the
 docs; stubs ship with the wheel so editors see them too.
 
-```python
-from perlin_noise import Instance, Palette, relief, hair
+`examples/` has the runnable Python:
 
-noise = Instance([8, 8], seed=7)
-print(noise.noise([3.5, 2.0]))
+| File | What it shows |
+| --- | --- |
+| [`examples/noise.py`](examples/noise.py) | `Instance`: one point, a table, the force |
+| [`examples/render.py`](examples/render.py) | every picture mode, twin of `examples/render.rs` |
+| [`examples/hair.py`](examples/hair.py) | the helper, `Hair()` knobs, and `Renderer.hair` |
 
-relief(seed=7, cells=12).write_png("relief.png")
-hair(seed=7, size=1440, color_from_field=True, palette=Palette.AZURE).write_png(
-    "hair.png"
-)
+```sh
+just python          # install into ./.venv (not into whatever `python` is)
+just python-noise    # uses that interpreter
+just python-render
+just python-hair
+```
+
+`just python` does not change your shell. Either run the `just python-*` recipes,
+or activate the venv first:
+
+```sh
+source .venv/bin/activate
+python examples/noise.py
 ```
 
 `relief`, `hair`, `globe`, `grayscale`, `colored` and `channels` build the
 field and render in one call. `Instance` and `Renderer` are there when you
 want the pieces.
-
-```sh
-just python       # maturin develop --release
-just test-python  # help() has docs, then pytest
-```
 
 ## Development
 

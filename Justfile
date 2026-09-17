@@ -87,15 +87,40 @@ lint:
 fmt:
     cargo fmt
 
-# Python extension, for `import perlin_noise`. Needs maturin and a venv
-# (`.venv` in this directory is enough).
+# Local interpreter maturin installs into. `python` on PATH is often another
+# one, which is why `python examples/noise.py` fails until this venv is active.
+venv := ".venv"
+py := venv / "bin/python"
+
+# Python extension, for `import perlin_noise`. Creates `.venv` if needed.
 python:
-    maturin develop --release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -x {{py}} ]]; then
+        python3 -m venv {{venv}}
+        {{py}} -m pip install -q maturin
+    fi
+    {{py}} -m maturin develop --release
+    echo "Installed into {{py}}."
+    echo "Run examples with:  just python-noise"
+    echo "Or:  source {{venv}}/bin/activate   then   python examples/noise.py"
 
 # The Python tests. Run `just python` first so the module is importable.
 test-python:
-    python -c "import perlin_noise, inspect; assert inspect.getdoc(perlin_noise.Instance)"
-    python -m pytest tests/test_perlin_noise.py -q
+    {{py}} -c "import perlin_noise, inspect; assert inspect.getdoc(perlin_noise.Instance)"
+    {{py}} -m pytest tests/test_perlin_noise.py -q
+
+# Sample a field from Python. Needs `just python` first.
+python-noise:
+    {{py}} examples/noise.py
+
+# One PNG per rendering mode, into images/. Twin of `just gallery`.
+python-render:
+    {{py}} examples/render.py {{out}}
+
+# Hair helper, Hair() knobs, and Renderer.hair.
+python-hair:
+    {{py}} examples/hair.py {{out}}
 
 # What to run before committing.
 check: fmt lint test
