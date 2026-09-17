@@ -292,11 +292,39 @@ Neither is on by default, so a plain build pulls in nothing.
 | --- | --- |
 | `gpu` | `Instance::table_gpu` and `Renderer::with_gpu`, via a `wgpu` compute shader |
 | `png` | `Image::write_png` |
+| `python` | The PyO3 module behind `import perlin_noise`; `png` comes with it |
 
 The shader computes in 32 bit floats where the CPU uses 64, so GPU values
 differ by about `1e-6` — far below what a pixel keeps, but visible if you
 compare tables. It reports an error rather than panicking when no adapter is
 available, so falling back to `table` is always an option.
+
+## Python
+
+The same library, installed as a package. After `pip install .` or
+`just python`, `help(perlin_noise)` and `help(perlin_noise.relief)` are the
+docs; stubs ship with the wheel so editors see them too.
+
+```python
+from perlin_noise import Instance, Palette, relief, hair
+
+noise = Instance([8, 8], seed=7)
+print(noise.noise([3.5, 2.0]))
+
+relief(seed=7, cells=12).write_png("relief.png")
+hair(seed=7, size=1440, color_from_field=True, palette=Palette.AZURE).write_png(
+    "hair.png"
+)
+```
+
+`relief`, `hair`, `globe`, `grayscale`, `colored` and `channels` build the
+field and render in one call. `Instance` and `Renderer` are there when you
+want the pieces.
+
+```sh
+just python       # maturin develop --release
+just test-python  # help() has docs, then pytest
+```
 
 ## Development
 

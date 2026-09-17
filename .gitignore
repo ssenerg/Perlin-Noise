@@ -1,3 +1,13 @@
 .DS_Store
 /target
 /images
+/dist
+/.venv
+/__pycache__
+*.pyc
+*.so
+*.pyd
+python/perlin_noise/*.so
+python/perlin_noise/*.pyd
+python/perlin_noise/*.dll
+.pytest_cache

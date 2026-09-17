@@ -4,10 +4,15 @@ version = "0.1.0"
 edition = "2024"
 readme = "README.md"
 
+[lib]
+name = "perlin_noise"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 bytemuck = { version = "1.25.2", optional = true }
 png = { version = "0.18.1", optional = true }
 pollster = { version = "1.0.1", optional = true }
+pyo3 = { version = "0.26", optional = true }
 wgpu = { version = "30.0.1", optional = true }
 
 [features]
@@ -16,6 +21,8 @@ default = []
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 # Write rendered images with Image::write_png.
 png = ["dep:png"]
+# Python bindings. Maturin turns this into an extension module.
+python = ["dep:pyo3", "png"]
 
 [[example]]
 name = "render"

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "perlin-noise"
+version = "0.1.0"
+description = "Perlin noise in any number of dimensions, with a renderer that turns a field into an image."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["perlin", "noise", "procedural", "image"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Multimedia :: Graphics",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/ssenerg/perlin-noise"
+
+[tool.maturin]
+python-source = "python"
+module-name = "perlin_noise._native"
+features = ["python", "pyo3/extension-module"]
+include = ["python/perlin_noise/py.typed", "python/perlin_noise/*.pyi"]

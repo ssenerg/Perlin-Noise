@@ -42,6 +42,8 @@ use std::io::{Error, ErrorKind, Result};
 mod gpu;
 mod hair;
 mod image;
+#[cfg(feature = "python")]
+mod python;
 mod rng;
 
 pub use hair::Hair;
@@ -78,6 +80,7 @@ fn overflow() -> Error {
 }
 
 /// A seeded Perlin noise field.
+#[derive(Clone)]
 pub struct Instance {
     dims: Vec<usize>,
     /// Intersections per axis, `dims[i] + 1`.

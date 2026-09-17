@@ -81,10 +81,21 @@ lint:
     cargo clippy --all-targets --features png -- -D warnings
     cargo clippy --all-targets --features gpu -- -D warnings
     cargo clippy --all-targets --features "png gpu" -- -D warnings
+    cargo clippy --all-targets --features python -- -D warnings
 
 # Format the code.
 fmt:
     cargo fmt
+
+# Python extension, for `import perlin_noise`. Needs maturin and a venv
+# (`.venv` in this directory is enough).
+python:
+    maturin develop --release
+
+# The Python tests. Run `just python` first so the module is importable.
+test-python:
+    python -c "import perlin_noise, inspect; assert inspect.getdoc(perlin_noise.Instance)"
+    python -m pytest tests/test_perlin_noise.py -q
 
 # What to run before committing.
 check: fmt lint test
